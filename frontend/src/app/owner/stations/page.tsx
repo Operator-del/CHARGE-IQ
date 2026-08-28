@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/AuthContext";
+import { fetchStationsCached } from "@/lib/stations";
 
 type LiveStation = {
   place_id: string;
@@ -24,11 +25,10 @@ export default function OwnerStationsPage() {
   }, [isAuthLoading, isAuthenticated, router]);
 
   useEffect(() => {
-    const load = async () => {
+    const load = async (lat: number, lng: number) => {
       setIsLoading(true);
       try {
-        const res = await fetch("http://localhost:8000/ev-stations?lat=22.3072&lng=73.1812&radius=30000");
-        const data = await res.json();
+        const data = await fetchStationsCached({ lat, lng, radius: 30000 });
         setStations(data.results || []);
       } catch {
         setStations([]);
@@ -37,7 +37,16 @@ export default function OwnerStationsPage() {
       }
     };
 
-    if (isAuthenticated) load();
+    if (!isAuthenticated) return;
+
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        ({ coords }) => load(coords.latitude, coords.longitude),
+        () => load(22.3072, 73.1812)
+      );
+    } else {
+      load(22.3072, 73.1812);
+    }
   }, [isAuthenticated]);
 
   return (
@@ -55,7 +64,9 @@ export default function OwnerStationsPage() {
               <p className="text-sm text-gray-400">Manage all your charging stations</p>
             </div>
           </div>
-          <button className="px-4 py-2 bg-green-500 hover:bg-green-400 text-black font-medium rounded-lg transition-colors">
+          <button
+            onClick={() => window.open("mailto:support@chargeiq.in?subject=Register New EV Station&body=I would like to register a new EV charging station.%0A%0AStation Name:%0AAddress:%0AConnector Types:%0ANumber of Slots:%0AOperating Hours:", "_blank")}
+            className="px-4 py-2 bg-green-500 hover:bg-green-400 text-black font-medium rounded-lg transition-colors">
             + Add New Station
           </button>
         </div>

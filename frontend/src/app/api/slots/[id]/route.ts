@@ -12,7 +12,6 @@ export async function PATCH(
       headers: getForwardHeaders(request),
       body: await request.text(),
     });
-
     const data = await res.json().catch(() => ({}));
     return NextResponse.json(data, { status: res.status });
   } catch (error: any) {

@@ -1,0 +1,202 @@
+type StationQuery = {
+  lat: number;
+  lng: number;
+  radius?: number;
+};
+
+type CachedResponse = {
+  ts: number;
+  data: any;
+};
+
+// ── Normalized station type used across all pages ────────────────────────────
+export type NormalizedStation = {
+  id: string;
+  name: string;
+  address: string;
+  city: string;
+  distance: string;           // e.g. "3.2 km"
+  distance_m: number | null;
+  latitude: number;
+  longitude: number;
+  type: "DC Fast Charger" | "AC Charger";
+  types: string[];
+  connectors: string[];
+  available: number;
+  total: number;
+  price: number;              // ₹/kWh
+  chargeTime: string;         // e.g. "35 mins"
+  hours: string;              // "Open Now" | "Closed"
+  open_now: boolean;
+  img: string;
+  badge: string;
+  verified: boolean;
+  peakPower: string;
+  place_id: string;
+};
+
+const STATION_IMGS = [
+  "https://images.unsplash.com/photo-1593941707882-a5bba14938c7?w=400&q=80",
+  "https://images.unsplash.com/photo-1568605117036-5fe5e7bab0b7?w=400&q=80",
+  "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=400&q=80",
+  "https://images.unsplash.com/photo-1660236822651-4263beb35fa8?w=400&q=80",
+];
+
+/**
+ * Transforms a raw Google Places result from the backend into a normalized
+ * station object used consistently across dashboard, stations list, worker, and owner pages.
+ *
+ * Uses a deterministic seed (name.length + index) so the same station always
+ * gets the same availability/price values within a session — consistent UX
+ * without real-time slot data from the backend.
+ */
+export function normalizeStation(raw: any, index: number): NormalizedStation {
+  const seed = raw.name.length + index;
+  const isDC = seed % 2 === 0;
+  const total = (seed % 4) + 2;
+  const available = raw.open_now ? seed % total : 0;
+
+  const type = isDC ? "DC Fast Charger" as const : "AC Charger" as const;
+  const connector = isDC ? "CCS2" : "Type 2";
+  const price = 12 + (seed % 10);
+  const chargeTime = isDC ? "35 mins" : "60 mins";
+
+  const backendImg =
+    raw.photo_urls && raw.photo_urls.length > 0
+      ? `http://localhost:8001${raw.photo_urls[0]}`
+      : null;
+
+  return {
+    id: raw.place_id || String(index),
+    name: raw.name,
+    address: raw.address || "Unknown Location",
+    city: raw.city || "",
+    distance: raw.distance_str || "Nearby",
+    distance_m: raw.distance_m ?? null,
+    latitude: raw.latitude,
+    longitude: raw.longitude,
+    type,
+    types: [type],
+    connectors: [connector],
+    available,
+    total,
+    price,
+    chargeTime,
+    hours: raw.open_now ? "Open Now" : "Closed",
+    open_now: !!raw.open_now,
+    img: backendImg ?? STATION_IMGS[seed % STATION_IMGS.length],
+    badge: index === 0 ? "Best Match" : "",
+    verified: seed % 3 !== 0,
+    peakPower: isDC ? "150 kW" : "22 kW",
+    place_id: raw.place_id || String(index),
+  };
+}
+
+/**
+ * Fetch + cache + normalize in one call.
+ * Returns NormalizedStation[] ready to render directly.
+ */
+export async function fetchAndNormalizeStations(
+  query: StationQuery,
+  limit?: number
+): Promise<NormalizedStation[]> {
+  const data = await fetchStationsCached(query);
+  const results: any[] = data.results || [];
+  const sliced = limit !== undefined ? results.slice(0, limit) : results;
+  return sliced.map(normalizeStation);
+}
+
+const MEMORY_CACHE = new Map<string, CachedResponse>();
+const INFLIGHT = new Map<string, Promise<any>>();
+
+// 10 minutes — station open/closed status doesn't change that fast
+const TTL_MS = 10 * 60 * 1000;
+
+// Round to 2 decimal places (~1.1 km grid).
+// Nearby users share the same cache bucket instead of generating unique keys.
+// Tradeoff: results are for the grid centre, not exact position — fine for a 30km radius search.
+function bucketCoord(n: number) {
+  return Math.round(n * 100) / 100;
+}
+
+function cacheKey({ lat, lng, radius = 30000 }: StationQuery) {
+  return `${bucketCoord(lat)}:${bucketCoord(lng)}:${radius}`;
+}
+
+function getFromStorage(key: string): CachedResponse | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(`stations:${key}`);
+    if (!raw) return null;
+    return JSON.parse(raw) as CachedResponse;
+  } catch {
+    return null;
+  }
+}
+
+function saveToStorage(key: string, payload: CachedResponse) {
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.setItem(`stations:${key}`, JSON.stringify(payload));
+  } catch {
+    // ignore quota errors — memory cache still works
+  }
+}
+
+export async function fetchStationsCached(query: StationQuery): Promise<any> {
+  const key = cacheKey(query);
+  const now = Date.now();
+
+  // 1. Memory cache (fastest — zero serialization)
+  const mem = MEMORY_CACHE.get(key);
+  if (mem && now - mem.ts < TTL_MS) return mem.data;
+
+  // 2. sessionStorage (survives component remounts but not tab close)
+  const stored = getFromStorage(key);
+  if (stored && now - stored.ts < TTL_MS) {
+    MEMORY_CACHE.set(key, stored); // warm memory cache
+    return stored.data;
+  }
+
+  // 3. Deduplicate in-flight requests — multiple components loading simultaneously
+  //    (dashboard + owner portal both mount at once) share one fetch
+  const existing = INFLIGHT.get(key);
+  if (existing) return existing;
+
+  // Use bucketed coords in the actual request so the backend cache also benefits
+  const { radius = 30000 } = query;
+  const lat = bucketCoord(query.lat);
+  const lng = bucketCoord(query.lng);
+
+  const promise = fetch(
+    `/api/ev-stations?lat=${lat}&lng=${lng}&radius=${radius}`,
+    { cache: "no-store" }
+  )
+    .then((res) => res.json())
+    .then((data) => {
+      const payload: CachedResponse = { ts: Date.now(), data };
+      MEMORY_CACHE.set(key, payload);
+      saveToStorage(key, payload);
+      return data;
+    })
+    .finally(() => {
+      INFLIGHT.delete(key);
+    });
+
+  INFLIGHT.set(key, promise);
+  return promise;
+}
+
+export function clearStationsCache() {
+  MEMORY_CACHE.clear();
+  INFLIGHT.clear();
+  if (typeof window !== "undefined") {
+    try {
+      Object.keys(sessionStorage)
+        .filter((k) => k.startsWith("stations:"))
+        .forEach((k) => sessionStorage.removeItem(k));
+    } catch {
+      // ignore
+    }
+  }
+}

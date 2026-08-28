@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState, Suspense } from "react";
 import { useRouter, useParams, useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/AuthContext";
 import { BACKEND_BASE_URL } from "@/lib/backend";
-import { QRCodePaymentModal } from "@/components/QRCodePaymentModal";
 
 type StationDetail = {
   place_id?: string;
@@ -105,7 +104,6 @@ function StationDetailContent() {
   const [imgIdx, setImgIdx] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [bookingError, setBookingError] = useState("");
-  const [isQRPaymentOpen, setIsQRPaymentOpen] = useState(false);
 
   const generateTimeSlots = () => {
     const currentTime = new Date();
@@ -579,11 +577,51 @@ function StationDetailContent() {
             {/* Pay button */}
             <button
               disabled={isSubmitting || stationAvail === 0}
-              onClick={() => {
-                setBookingError("");
-                setIsQRPaymentOpen(true);
+              onClick={async () => {
+                setIsSubmitting(true);
+                try {
+                  const res = await fetch("/api/bookings", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      stationId,
+                      stationPlaceId: stationId,
+                      stationName,
+                      address: `${stationAddr}${
+                        stationCity ? ", " + stationCity : ""
+                      }`,
+                      date: bookingDate,
+                      time,
+                      connector: selectedConnector?.name || connectorNames[0],
+                      amount: totalCost,
+                      baseCharge,
+                      serviceFee,
+                      tax,
+                      ratePerKwh: stationPrice,
+                      energyEstimateKwh: 42.5,
+                      slotNumber,
+                      estimatedCharge: stationChargeTime,
+                      image: stationImg,
+                      paymentMethod: "UPI",
+                      vehicleInfo: user?.vehicleModel || "",
+                      instructions: `Park in slot ${slotNumber}. Use the ChargeIQ app to start charging.`,
+                    }),
+                  });
+                  const data = await res.json();
+                  if (res.ok && data.booking?.id) {
+                    router.push(
+                      `/booking-success?bookingId=${data.booking.id}`
+                    );
+                  } else {
+                    setBookingError(data.detail || data.error || "Booking failed");
+                  }
+                } catch (error: any) {
+                  setBookingError(error?.message || "Booking failed");
+                } finally {
+                  setIsSubmitting(false);
+                }
               }}
-              className="w-full flex items-center justify-between bg-green-500 hover:bg-green-400 active:bg-green-600 disabled:bg-green-500/50 text-black font-bold px-5 py-4 rounded-xl transition-colors text-[15px] cursor-pointer"
+              className="w-full flex items-center justify-between bg-green-500 hover:bg-green-400 active:bg-green-600 disabled:bg-green-500/50 text-black font-bold px-5 py-4 rounded-xl transition-colors text-[15px]"
             >
               <svg
                 className="w-5 h-5"
@@ -596,10 +634,10 @@ function StationDetailContent() {
                 <path d="M7 11V7a5 5 0 0110 0v4" />
               </svg>
               {isSubmitting
-                ? "Processing..."
+                ? "Confirming..."
                 : stationAvail === 0
                 ? "No Slots Available"
-                : "Pay via UPI QR Code"}
+                : "Pay & Confirm"}
               <svg
                 className="w-5 h-5"
                 fill="none"
@@ -611,9 +649,9 @@ function StationDetailContent() {
               </svg>
             </button>
 
-            <div className="flex items-center justify-center gap-1.5 text-[#666] text-[11px]">
+            <div className="flex items-center justify-center gap-1.5 text-[#555] text-[10px]">
               <svg
-                className="w-3.5 h-3.5 text-green-400"
+                className="w-3.5 h-3.5 text-green-600"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -621,7 +659,7 @@ function StationDetailContent() {
               >
                 <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
               </svg>
-              Instant QR Payment Gateway (GPay, PhonePe, Paytm, BHIM, CRED)
+              Secure payment powered by Razorpay
             </div>
             {bookingError && (
               <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
@@ -631,65 +669,9 @@ function StationDetailContent() {
           </div>
         </div>
       </div>
-
-      {/* QR Code Payment Gateway Modal */}
-      <QRCodePaymentModal
-        isOpen={isQRPaymentOpen}
-        onClose={() => setIsQRPaymentOpen(false)}
-        amount={totalCost}
-        title={`Slot ${slotNumber} • ${stationName}`}
-        subtitle="Scan with any UPI app to complete booking"
-        onSuccess={async (paymentDetails) => {
-          setIsSubmitting(true);
-          try {
-            const res = await fetch("/api/bookings", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                stationId,
-                stationPlaceId: stationId,
-                stationName,
-                address: `${stationAddr}${
-                  stationCity ? ", " + stationCity : ""
-                }`,
-                date: bookingDate,
-                time,
-                connector: selectedConnector?.name || connectorNames[0],
-                amount: totalCost,
-                baseCharge,
-                serviceFee,
-                tax,
-                ratePerKwh: stationPrice,
-                energyEstimateKwh: 42.5,
-                slotNumber,
-                estimatedCharge: stationChargeTime,
-                image: stationImg,
-                paymentMethod: "UPI_QR",
-                instructions: `Txn Ref: ${paymentDetails.transactionId}. Park in slot ${slotNumber}. Use the ChargeIQ app to start charging.`,
-              }),
-            });
-            const data = await res.json();
-            if (res.ok && data.booking?.id) {
-              setIsQRPaymentOpen(false);
-              router.push(
-                `/booking-success?bookingId=${data.booking.id}`
-              );
-            } else {
-              setBookingError(data.detail || data.error || "Booking failed");
-              setIsQRPaymentOpen(false);
-            }
-          } catch (error: any) {
-            setBookingError(error?.message || "Booking failed");
-            setIsQRPaymentOpen(false);
-          } finally {
-            setIsSubmitting(false);
-          }
-        }}
-      />
     </div>
   );
 }
-
 
 export default function StationDetailPage() {
   return (

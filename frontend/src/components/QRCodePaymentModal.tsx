@@ -1,9 +1,8 @@
 "use client";
-import React, { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import QRCode from "qrcode";
 import {
-  IconQrcode,
   IconCheck,
   IconCopy,
   IconClock,
@@ -26,7 +25,6 @@ interface QRCodePaymentModalProps {
   }) => void;
   amount: number;
   title?: string;
-  subtitle?: string;
   upiId?: string;
 }
 
@@ -36,7 +34,6 @@ export function QRCodePaymentModal({
   onSuccess,
   amount,
   title = "EV Charging Slot Booking",
-  subtitle = "Scan with any UPI App to pay",
   upiId = "chargeiq.ev@okaxis",
 }: QRCodePaymentModalProps) {
   const [qrDataUrl, setQrDataUrl] = useState<string>("");
@@ -52,9 +49,13 @@ export function QRCodePaymentModal({
   // Generate UPI QR Code on open / amount change
   useEffect(() => {
     if (!isOpen) {
-      setPaymentStatus("idle");
-      setTimeLeft(300);
-      return;
+      // Delay reset so success screen isn't cut off mid-animation
+      const t = setTimeout(() => {
+        setPaymentStatus("idle");
+        setTimeLeft(300);
+        setQrDataUrl("");
+      }, 600);
+      return () => clearTimeout(t);
     }
 
     const upiUri = `upi://pay?pa=${encodeURIComponent(
@@ -74,8 +75,8 @@ export function QRCodePaymentModal({
       },
       errorCorrectionLevel: "H",
     })
-      .then((url) => setQrDataUrl(url))
-      .catch((err) => console.error("QR Generation error", err));
+      .then((url: string) => setQrDataUrl(url))
+      .catch((err: Error) => console.error("QR Generation error", err));
   }, [isOpen, amount, upiId, transactionId]);
 
   // Countdown timer
@@ -123,7 +124,7 @@ export function QRCodePaymentModal({
     }, 2000);
   };
 
-  if (!isOpen) return null;
+  if (!isOpen && paymentStatus !== "success") return null;
 
   return (
     <AnimatePresence>
@@ -150,9 +151,9 @@ export function QRCodePaymentModal({
           className="relative w-full max-w-md bg-[#111111] border border-white/15 rounded-3xl shadow-[0_0_50px_rgba(34,197,94,0.18)] overflow-hidden z-10 text-white"
         >
           {/* Header Banner */}
-          <div className="relative bg-gradient-to-r from-green-600 via-emerald-600 to-cyan-600 px-6 py-4 text-black flex items-center justify-between">
+          <div className="relative bg-linear-to-r from-green-600 via-emerald-600 to-cyan-600 px-6 py-4 text-black flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-xl bg-black/20 backdrop-blur flex items-center justify-center text-black font-black">
+              <div className="w-8 h-8 rounded-xl bg-black/20 backdrop-blur flex items-center justify-center">
                 <IconBolt className="w-5 h-5 text-black fill-black" />
               </div>
               <div>
@@ -188,7 +189,7 @@ export function QRCodePaymentModal({
                     animate={{ scale: 1 }}
                     transition={{ delay: 0.2, type: "spring" }}
                   >
-                    <IconCheck className="w-10 h-10 stroke-[3]" />
+                    <IconCheck className="w-10 h-10 stroke-3" />
                   </motion.div>
                 </div>
                 <h3 className="text-2xl font-black text-white">Payment Verified!</h3>
@@ -200,7 +201,7 @@ export function QRCodePaymentModal({
                 </p>
                 <div className="inline-flex items-center gap-2 text-xs text-gray-400 animate-pulse pt-2">
                   <IconSparkles className="w-4 h-4 text-green-400" />
-                  Finalizing your booking details...
+                  Finalizing your subscription...
                 </div>
               </motion.div>
             ) : paymentStatus === "expired" ? (
@@ -226,7 +227,7 @@ export function QRCodePaymentModal({
             ) : (
               <>
                 {/* Amount & Purpose Header */}
-                <div className="flex items-center justify-between bg-white/[0.04] border border-white/10 rounded-2xl p-4">
+                <div className="flex items-center justify-between bg-white/4 border border-white/10 rounded-2xl p-4">
                   <div>
                     <p className="text-xs text-gray-400 font-medium">{title}</p>
                     <p className="text-[11px] text-gray-500 font-mono mt-0.5">
@@ -259,7 +260,7 @@ export function QRCodePaymentModal({
                             duration: 2.4,
                             ease: "easeInOut",
                           }}
-                          className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-transparent via-green-500 to-transparent shadow-[0_0_12px_#22c55e] pointer-events-none"
+                          className="absolute top-0 left-0 right-0 h-1 bg-linear-to-r from-transparent via-green-500 to-transparent shadow-[0_0_12px_#22c55e] pointer-events-none"
                         />
                       )}
                     </div>
@@ -275,7 +276,7 @@ export function QRCodePaymentModal({
                   </div>
                 </div>
 
-                {/* Timer & Supported UPI Apps */}
+                {/* Timer & Security Row */}
                 <div className="flex items-center justify-between text-xs px-1">
                   <div className="flex items-center gap-1.5 text-amber-400 bg-amber-400/10 border border-amber-400/20 px-3 py-1 rounded-full font-mono font-medium">
                     <IconClock className="w-3.5 h-3.5" />
@@ -340,7 +341,7 @@ export function QRCodePaymentModal({
                   <button
                     disabled={paymentStatus === "verifying"}
                     onClick={handleConfirmPayment}
-                    className="w-full py-3.5 bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-400 hover:to-emerald-400 active:scale-[0.99] text-black font-bold text-sm rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg shadow-green-500/20 disabled:opacity-50 cursor-pointer"
+                    className="w-full py-3.5 bg-linear-to-r from-green-500 to-emerald-500 hover:from-green-400 hover:to-emerald-400 active:scale-[0.99] text-black font-bold text-sm rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg shadow-green-500/20 disabled:opacity-50 cursor-pointer"
                   >
                     {paymentStatus === "verifying" ? (
                       <>

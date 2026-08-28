@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/AuthContext";
+import { fetchStationsCached } from "@/lib/stations";
 
 type Booking = {
   id: string;
@@ -34,16 +35,7 @@ export default function WorkerDashboard() {
   const [selectedStation, setSelectedStation] = useState("");
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [stations, setStations] = useState<NearbyStation[]>([]);
-  const [slotStatuses, setSlotStatuses] = useState<Record<string, string>>({
-    A1: "available",
-    A2: "occupied",
-    A3: "available",
-    A4: "maintenance",
-    B1: "occupied",
-    B2: "available",
-    B3: "reserved",
-    B4: "available",
-  });
+  const [slotStatuses, setSlotStatuses] = useState<Record<string, string>>({});
   const [isStationsLoading, setIsStationsLoading] = useState(true);
 
   useEffect(() => {
@@ -53,12 +45,16 @@ export default function WorkerDashboard() {
 
   useEffect(() => {
     if (!isAuthLoading && !isAuthenticated) router.replace("/");
-  }, [isAuthLoading, isAuthenticated, router]);
+    if (!isAuthLoading && isAuthenticated && user && user.role !== "worker" && user.role !== "admin") {
+      router.replace("/dashboard");
+    }
+  }, [isAuthLoading, isAuthenticated, user, router]);
 
   useEffect(() => {
     const loadBookings = async () => {
       try {
-        const res = await fetch("/api/bookings");
+        // Workers need all station bookings, not just their own
+        const res = await fetch("/api/admin/bookings");
         if (res.ok) {
           const data = await res.json();
           setBookings(data.bookings || []);
@@ -70,15 +66,35 @@ export default function WorkerDashboard() {
       }
     };
 
-    if (isAuthenticated) loadBookings();
+    const loadSlots = async () => {
+      try {
+        const res = await fetch("/api/slots");
+        if (res.ok) {
+          const data = await res.json();
+          const statusMap: Record<string, string> = {};
+          for (const slot of (data.slots || [])) {
+            statusMap[slot.id] = slot.status;
+          }
+          if (Object.keys(statusMap).length > 0) {
+            setSlotStatuses(statusMap);
+          }
+        }
+      } catch {
+        // keep empty — slotData will fall back to "available" for unknown slots
+      }
+    };
+
+    if (isAuthenticated) {
+      loadBookings();
+      loadSlots();
+    }
   }, [isAuthenticated]);
 
   useEffect(() => {
     const loadStations = async () => {
       setIsStationsLoading(true);
       const fallback = async () => {
-        const res = await fetch("http://localhost:8000/ev-stations?lat=22.3072&lng=73.1812&radius=30000");
-        const data = await res.json();
+        const data = await fetchStationsCached({ lat: 22.3072, lng: 73.1812, radius: 30000 });
         const results = data.results || [];
         setStations(results);
         setSelectedStation(results[0]?.place_id || "");
@@ -93,8 +109,7 @@ export default function WorkerDashboard() {
         navigator.geolocation.getCurrentPosition(
           async ({ coords }) => {
             try {
-              const res = await fetch(`http://localhost:8000/ev-stations?lat=${coords.latitude}&lng=${coords.longitude}&radius=30000`);
-              const data = await res.json();
+              const data = await fetchStationsCached({ lat: coords.latitude, lng: coords.longitude, radius: 30000 });
               const results = data.results || [];
               setStations(results);
               setSelectedStation(results[0]?.place_id || "");
@@ -222,7 +237,7 @@ export default function WorkerDashboard() {
     );
   }
 
-  if (!isAuthenticated) return null;
+  if (!isAuthenticated || (user && user.role !== "worker" && user.role !== "admin")) return null;
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white pt-20 pb-20">

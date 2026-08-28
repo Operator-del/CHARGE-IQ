@@ -3,11 +3,9 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/AuthContext";
 import dynamic from "next/dynamic";
+import { fetchAndNormalizeStations, NormalizedStation } from "@/lib/stations";
 
 const DashboardMap = dynamic(() => import("@/components/DashboardMap"), { ssr: false });
-
-// Fallback mock data
-const fallbackStations: any[] = [];
 
 function getGreeting() {
   const h = new Date().getHours();
@@ -69,7 +67,7 @@ export default function DashboardPage() {
   const [location, setLocation] = useState("Detecting...");
   const [activeNav, setActiveNav] = useState("Dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [stationsList, setStationsList] = useState<any[]>(fallbackStations);
+  const [stationsList, setStationsList] = useState<NormalizedStation[]>([]);
   const [isStationsLoading, setIsStationsLoading] = useState(true);
   const [summary, setSummary] = useState<{
     totalBookings: number;
@@ -78,38 +76,24 @@ export default function DashboardPage() {
     availableSlots: number;
   } | null>(null);
 
+  // Role-based redirect — workers/owners/admins have their own dashboards
   useEffect(() => {
-    if (!isAuthLoading && !isAuthenticated) router.replace("/");
-  }, [isAuthLoading, isAuthenticated, router]);
+    if (!isAuthLoading && !isAuthenticated) {
+      router.replace("/");
+    }
+    if (!isAuthLoading && isAuthenticated && user) {
+      if (user.role === "worker") router.replace("/worker");
+      else if (user.role === "owner") router.replace("/owner");
+      else if (user.role === "admin") router.replace("/admin");
+    }
+  }, [isAuthLoading, isAuthenticated, user, router]);
 
   useEffect(() => {
     const fetchStations = async (lat: number, lng: number) => {
       setIsStationsLoading(true);
       try {
-        const res = await fetch(`http://localhost:8000/ev-stations?lat=${lat}&lng=${lng}&radius=30000`);
-        const data = await res.json();
-        
-        if (data.results && data.results.length > 0) {
-          const mapped = data.results.slice(0, 5).map((s: any, i: number) => {
-            // Generate deterministic mock stats for chargers based on name length
-            const seed = s.name.length + i;
-            const isDC = seed % 2 === 0;
-            const total = (seed % 4) + 2;
-            const available = s.open_now ? (seed % total) : 0;
-            return {
-              id: s.place_id || i.toString(),
-              name: s.name,
-              distance: s.distance_str || "Nearby",
-              type: isDC ? "DC Fast Charger" : "AC Charger",
-              available: available,
-              total: total,
-              price: 12 + (seed % 10)
-            };
-          });
-          setStationsList(mapped);
-        } else {
-          setStationsList([]);
-        }
+        const mapped = await fetchAndNormalizeStations({ lat, lng, radius: 30000 }, 5);
+        setStationsList(mapped);
       } catch (e) {
         console.error("Failed to fetch UI stations", e);
         setStationsList([]);
@@ -142,14 +126,29 @@ export default function DashboardPage() {
   useEffect(() => {
     const loadSummary = async () => {
       try {
-        const res = await fetch("/api/summary");
+        // Fetch the user's own bookings for personal stats
+        const res = await fetch("/api/bookings");
         if (res.ok) {
           const data = await res.json();
+          const bookings: any[] = data.bookings || [];
+          const active = bookings.filter((b) => b.status === "confirmed").length;
+          const spent = bookings
+            .filter((b) => b.status === "completed")
+            .reduce((sum, b) => sum + (b.amount || 0), 0);
+          // Available slots from summary (global — still useful context)
+          let availableSlots = 0;
+          try {
+            const sr = await fetch("/api/summary");
+            if (sr.ok) {
+              const sd = await sr.json();
+              availableSlots = sd.availableSlots || 0;
+            }
+          } catch { /* ignore */ }
           setSummary({
-            totalBookings: data.totalBookings || 0,
-            activeBookings: data.activeBookings || 0,
-            totalRevenue: data.totalRevenue || 0,
-            availableSlots: data.availableSlots || 0,
+            totalBookings: bookings.length,
+            activeBookings: active,
+            totalRevenue: spent,
+            availableSlots,
           });
         }
       } catch {
@@ -167,7 +166,8 @@ export default function DashboardPage() {
       <div className="animate-spin w-8 h-8 border-4 border-green-500 border-t-transparent rounded-full" />
     </div>;
   }
-  if (!isAuthenticated) return null;
+  // Still loading role redirect or non-user role — render nothing (redirect in progress)
+  if (!isAuthenticated || !user || user.role === "worker" || user.role === "owner" || user.role === "admin") return null;
 
   const displayName = typeof user === "string" ? user : user?.name || "Driver";
   const estimatedRange = Math.round(battery * 3);
@@ -361,9 +361,9 @@ export default function DashboardPage() {
           {/* ── Live Summary ── */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {[
-              { label: "Bookings", value: summary?.totalBookings ?? "—", color: "text-green-400" },
+              { label: "My Bookings", value: summary?.totalBookings ?? "—", color: "text-green-400" },
               { label: "Active", value: summary?.activeBookings ?? "—", color: "text-blue-400" },
-              { label: "Revenue", value: `₹${summary?.totalRevenue ?? 0}`, color: "text-emerald-400" },
+              { label: "Total Spent", value: `₹${summary?.totalRevenue ?? 0}`, color: "text-emerald-400" },
               { label: "Open Slots", value: summary?.availableSlots ?? "—", color: "text-yellow-400" },
             ].map((item) => (
               <div key={item.label} className="bg-[#111] border border-[#1f1f1f] rounded-xl p-4">
