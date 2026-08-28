@@ -5,7 +5,6 @@ from flask_cors import CORS
 import chat
 
 app = Flask(__name__)
-app.secret_key = os.urandom(24)
 
 # Allow requests from any origin (covers local network IPs like 192.168.x.x)
 CORS(app)
